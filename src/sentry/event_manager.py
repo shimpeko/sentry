@@ -223,6 +223,30 @@ class ScoreClause(object):
         return math.log(times_seen) * 600 + float(last_seen.strftime('%s'))
 
 
+def create_group_from_event(event, release):
+    from sentry.constants import LOG_LEVELS_MAP
+    with transaction.atomic():
+        return Group.objects.create(
+            project=event.project,
+            short_id=event.project.next_short_id(),
+            platform=event.platform,
+            message=event.message,
+            score=ScoreClause.calculate(1, event.datetime),
+            culprit=generate_culprit(event.data, event.platform),
+            logger=event.get_tag('logger') or DEFAULT_LOGGER_NAME,
+            level=LOG_LEVELS_MAP.get(event.get_tag('level'), logging.ERROR),
+            last_seen=event.datetime,
+            first_seen=event.datetime,
+            active_at=event.datetime,
+            first_release=release,  # TODO
+            data={
+                'last_received': event.data.get('received') or float(event.datetime.strftime('%s')),  # XXX
+                'type': event.data['type'],
+                'metadata': event.data['metadata'],
+            }
+        )
+
+
 class EventManager(object):
     logger = logging.getLogger('sentry.events')
 
@@ -804,17 +828,9 @@ class EventManager(object):
         # it should be resolved by the hash merging function later but this
         # should be better tested/reviewed
         if existing_group_id is None:
-            kwargs['score'] = ScoreClause.calculate(1, kwargs['last_seen'])
-            with transaction.atomic():
-                short_id = project.next_short_id()
-                group, group_is_new = Group.objects.create(
-                    project=project,
-                    short_id=short_id,
-                    **kwargs
-                ), True
+            group, group_is_new = create_group_from_event(event, release), True
         else:
             group = Group.objects.get(id=existing_group_id)
-
             group_is_new = False
 
         # If all hashes are brand new we treat this event as new
